@@ -303,6 +303,7 @@ class NetlinkMixin(object):
         self.lock = LockFactory()
         self._sock = None
         self._ctrl_read, self._ctrl_write = os.pipe()
+        self._evt_read, self._evt_write = None, None
         self.buffer_queue = Queue()
         self.qsize = 0
         self.log = []
@@ -484,7 +485,15 @@ class NetlinkMixin(object):
             for (fd, event) in events:
                 if fd == sockfd:
                     try:
-                        self.buffer_queue.put(self._sock.recv(1024 * 1024))
+                        b = self._sock.recv(1024 * 1024)
+                        offset = 0
+                        while offset < len(b):
+                            h = b[offset:offset + 4]
+                            l = struct.unpack('I', h)[0]
+                            l = (l + 4 - 1) & ~ (4 - 1)
+                            os.write(self._evt_write, '\x00')
+                            offset += l
+                        self.buffer_queue.put(b)
                     except Exception as e:
                         self.buffer_queue.put(e)
                 else:
@@ -626,6 +635,9 @@ class NetlinkMixin(object):
                                 (terminate is not None and terminate(msg)):
                             # The loop is done
                             enough = True
+                        if (msg['header']['type'] == NLMSG_DONE) and \
+                                (self._evt_read is not None):
+                            os.read(self._evt_read, 1)
 
                         # If it is just a normal message, append it to
                         # the response
@@ -739,6 +751,8 @@ class NetlinkMixin(object):
                     #
                     # 8<-------------------------------------------------------
 
+            if self._evt_read is not None:
+                os.read(self._evt_read, len(ret))
             return ret
 
     def nlm_request(self, msg, msg_type,
@@ -846,6 +860,8 @@ class NetlinkSocket(NetlinkMixin):
                     raise data
                 else:
                     return data
+            self._evt_read, self._evt_write = os.pipe()
+            self.fileno = lambda: self._evt_read
             self._recv = recv_plugin
             self.pthread = threading.Thread(target=self.async_recv)
             self.pthread.setDaemon(True)

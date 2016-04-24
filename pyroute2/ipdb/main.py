@@ -381,6 +381,7 @@ after some delay.
 classes
 -------
 '''
+import select
 import atexit
 import logging
 import traceback
@@ -1131,77 +1132,86 @@ class IPDB(object):
         .. note::
             Should not be called manually.
         '''
+        poll = select.poll()
+        poll.register(self.nl, select.POLLIN | select.POLLPRI)
+
         while not self._stop:
             try:
-                messages = self.nl.get()
-                ##
-                # Check it again
-                #
-                # NOTE: one should not run callbacks or
-                # anything like that after setting the
-                # _stop flag, since IPDB is not valid
-                # anymore
-                if self._stop:
-                    break
-            except:
-                logging.error('Restarting IPDB instance after '
-                              'error:\n%s', traceback.format_exc())
-                if self.restart_on_error:
-                    try:
-                        self.initdb()
-                    except:
-                        logging.error('Error restarting DB:\n%s',
-                                      traceback.format_exc())
-                        return
-                    continue
-                else:
-                    raise RuntimeError('Emergency shutdown')
-            for msg in messages:
-                # Run pre-callbacks
-                # NOTE: pre-callbacks are synchronous
-                for (cuid, cb) in tuple(self._pre_callbacks.items()):
-                    try:
-                        cb(self, msg, msg['event'])
-                    except:
-                        pass
+                events = poll.poll()
+            except Exception as e:
+                logging.error("Poll error: %s", str(e))
 
-                with self.exclusive:
-                    # FIXME: refactor it to a dict
-                    if msg.get('event', None) in ('RTM_NEWLINK',
-                                                  'RTM_DELLINK'):
-                        self.update_dev(msg)
-                        self._links_event.set()
-                    elif msg.get('event', None) == 'RTM_NEWADDR':
-                        self.update_addr([msg], 'add')
-                    elif msg.get('event', None) == 'RTM_DELADDR':
-                        self.update_addr([msg], 'remove')
-                    elif msg.get('event', None) == 'RTM_NEWNEIGH':
-                        self.update_neighbours([msg], 'add')
-                    elif msg.get('event', None) == 'RTM_DELNEIGH':
-                        self.update_neighbours([msg], 'remove')
-                    elif msg.get('event', None) in ('RTM_NEWROUTE',
-                                                    'RTM_DELROUTE'):
-                        self.update_routes([msg])
+            for (fd, event) in events:
+                try:
+                    messages = self.nl.get()
+                    ##
+                    # Check it again
+                    #
+                    # NOTE: one should not run callbacks or
+                    # anything like that after setting the
+                    # _stop flag, since IPDB is not valid
+                    # anymore
+                    if self._stop:
+                        break
+                except:
+                    logging.error('Restarting IPDB instance after '
+                                  'error:\n%s', traceback.format_exc())
+                    if self.restart_on_error:
+                        try:
+                            self.initdb()
+                        except:
+                            logging.error('Error restarting DB:\n%s',
+                                          traceback.format_exc())
+                            return
+                        continue
+                    else:
+                        raise RuntimeError('Emergency shutdown')
+                for msg in messages:
+                    # Run pre-callbacks
+                    # NOTE: pre-callbacks are synchronous
+                    for (cuid, cb) in tuple(self._pre_callbacks.items()):
+                        try:
+                            cb(self, msg, msg['event'])
+                        except:
+                            pass
 
-                # run post-callbacks
-                # NOTE: post-callbacks are asynchronous
-                for (cuid, cb) in tuple(self._post_callbacks.items()):
-                    t = threading.Thread(name="callback %s" % (id(cb)),
-                                         target=cb,
-                                         args=(self, msg, msg['event']))
-                    t.start()
-                    if cuid not in self._cb_threads:
-                        self._cb_threads[cuid] = set()
-                    self._cb_threads[cuid].add(t)
+                    with self.exclusive:
+                        # FIXME: refactor it to a dict
+                        if msg.get('event', None) in ('RTM_NEWLINK',
+                                                      'RTM_DELLINK'):
+                            self.update_dev(msg)
+                            self._links_event.set()
+                        elif msg.get('event', None) == 'RTM_NEWADDR':
+                            self.update_addr([msg], 'add')
+                        elif msg.get('event', None) == 'RTM_DELADDR':
+                            self.update_addr([msg], 'remove')
+                        elif msg.get('event', None) == 'RTM_NEWNEIGH':
+                            self.update_neighbours([msg], 'add')
+                        elif msg.get('event', None) == 'RTM_DELNEIGH':
+                            self.update_neighbours([msg], 'remove')
+                        elif msg.get('event', None) in ('RTM_NEWROUTE',
+                                                        'RTM_DELROUTE'):
+                            self.update_routes([msg])
 
-                # occasionally join cb threads
-                for cuid in tuple(self._cb_threads):
-                    for t in tuple(self._cb_threads.get(cuid, ())):
-                        t.join(0)
-                        if not t.is_alive():
-                            try:
-                                self._cb_threads[cuid].remove(t)
-                            except KeyError:
-                                pass
-                            if len(self._cb_threads.get(cuid, ())) == 0:
-                                del self._cb_threads[cuid]
+                    # run post-callbacks
+                    # NOTE: post-callbacks are asynchronous
+                    for (cuid, cb) in tuple(self._post_callbacks.items()):
+                        t = threading.Thread(name="callback %s" % (id(cb)),
+                                             target=cb,
+                                             args=(self, msg, msg['event']))
+                        t.start()
+                        if cuid not in self._cb_threads:
+                            self._cb_threads[cuid] = set()
+                        self._cb_threads[cuid].add(t)
+
+                    # occasionally join cb threads
+                    for cuid in tuple(self._cb_threads):
+                        for t in tuple(self._cb_threads.get(cuid, ())):
+                            t.join(0)
+                            if not t.is_alive():
+                                try:
+                                    self._cb_threads[cuid].remove(t)
+                                except KeyError:
+                                    pass
+                                if len(self._cb_threads.get(cuid, ())) == 0:
+                                    del self._cb_threads[cuid]

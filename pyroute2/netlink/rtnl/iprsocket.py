@@ -1,4 +1,4 @@
-
+import os
 from pyroute2.common import Namespace
 from pyroute2.common import AddrPool
 from pyroute2.proxy import NetlinkProxy
@@ -99,6 +99,8 @@ class IPRSocketMixin(object):
                             self.backlog[seq].append(msg)
                         else:
                             self.backlog[seq] = [msg]
+                    if self._evt_write is not None:
+                        os.write(self._evt_write, '\x00' * len(msgs))
                     return len(ret['data'])
             else:
                 ValueError('Incorrect verdict')
