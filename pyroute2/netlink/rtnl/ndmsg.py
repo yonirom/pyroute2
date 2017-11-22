@@ -27,6 +27,7 @@ NUD_NONE = 0x00
 (NUD_NAMES, NUD_VALUES) = map_namespace('NUD_', globals())
 flags = dict([(x[0][4:].lower(), x[1]) for x in NTF_NAMES.items()])
 states = dict([(x[0][4:].lower(), x[1]) for x in NUD_NAMES.items()])
+state_strings = dict([(x[1], x[0][4:]) for x in NUD_NAMES.items()])
 
 
 def states_a2n(s):
